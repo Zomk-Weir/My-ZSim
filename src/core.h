@@ -33,6 +33,11 @@
 #include "stats.h"
 #include "decoder.h"
 
+// Forward declaration: Core base class exposes a way for off-core entities
+// (e.g. the VPU co-processor) to obtain the host L1 data cache without
+// pulling in the FilterCache definition here.
+class FilterCache;
+
 struct BblInfo {
     uint32_t instrs;
     uint32_t bytes;
@@ -89,13 +94,18 @@ class Core : public GlobAlloc {
 
         virtual InstrFuncPtrs GetFuncPtrs() = 0;
 
-        // Phase 1: accelerator stall interface.
-        // Called from HandleMagicOp after AccelCore::simulate() returns a
-        // latency.  The core should advance its cycle counter by 'cycles' to
-        // model the CPU stalling while the accelerator executes.
+        // Generic stall interface for off-core entities (VPU co-processor,
+        // future hardware models, etc.).  Called from HandleMagicOp after
+        // an external simulator routine returns a latency.  The core should
+        // advance its cycle counter by 'cycles' to model the CPU stalling.
         // Default implementation is a no-op (safe for cores that don't model
         // cycle-accurate timing, e.g. NullCore).
-        virtual void stallForAccel(uint64_t cycles) {}
+        virtual void stallCycles(uint64_t cycles) {}
+
+        // Expose the L1 data cache to off-core entities that want to issue
+        // memory requests on the host core's behalf (e.g. VPU shared-L1
+        // access).  Returns nullptr if the core does not model an L1D.
+        virtual FilterCache* getL1D() { return nullptr; }
 
         void setOvecOperand(uint64_t op) {
             this->lastOvecOperand = op;

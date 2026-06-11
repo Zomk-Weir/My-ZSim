@@ -80,8 +80,8 @@
 #include "fake_hit_manager.h"
 // modified by wei wu on 251211: Added PC access recorder include
 #include "pc_access_recorder.h"
-// Phase 1: simulated accelerator (collision-check co-processor)
-#include "accel_core.h"
+// Simulated VPU co-processor (independent of any Core, awakened via magic-op)
+#include "vpu.h"
 
 extern void EndOfPhaseActions(); //in zsim.cpp
 
@@ -1044,45 +1044,42 @@ void SimInit(const char* configFile, const char* outputDir, uint32_t shmid) {
 
     bool perProcessDir = config.get<bool>("sim.perProcessDir", false);
 
-    // ---- Phase 1: Accelerator initialisation ----
-    // IMPORTANT: All config.get<>() calls for the "accel" group MUST happen
+    // ---- VPU co-processor initialisation ----
+    // IMPORTANT: All config.get<>() calls for the "vpu" group MUST happen
     // before config.writeAndClose(), otherwise the strict-config check will
     // panic because those keys appear in the input cfg but were never read
     // into outCfg (which is what writeAndClose compares against).
     //
-    // Strategy: always read every possible accel.* key (with safe defaults)
+    // Strategy: always read every possible vpu.* key (with safe defaults)
     // regardless of whether enable=true, so that the key is recorded in
     // outCfg and the unused-setting check passes.
     //
     // IMPORTANT: initStats() MUST be called before PostInitStats() which
     // calls rootStat->makeImmutable(). After makeImmutable(), append() will
     // trigger an assertion failure.
-    zinfo->accel = nullptr;
+    zinfo->vpu = nullptr;
     {
-        bool accelEnabled             = config.get<bool>    ("accel.enable",               false);
-        uint64_t fixed_latency_cycles = config.get<uint64_t>("accel.fixed_latency_cycles", 50);
-        uint32_t dispatch_lat         = config.get<uint32_t>("accel.dispatch_lat",          10);
-        uint32_t addr_compute_lat     = config.get<uint32_t>("accel.addr_compute_lat",        2);
-        uint32_t bitop_lat            = config.get<uint32_t>("accel.bitop_lat",               1);
-        uint32_t writeback_lat        = config.get<uint32_t>("accel.writeback_lat",           5);
-        uint32_t lane_width           = config.get<uint32_t>("accel.lane_width",              8);
+        bool     vpuEnabled    = config.get<bool>    ("vpu.enable",        false);
+        uint32_t dispatch_lat  = config.get<uint32_t>("vpu.dispatch_lat",  10);
+        uint32_t exec_lat      = config.get<uint32_t>("vpu.exec_lat",       1);
+        uint32_t writeback_lat = config.get<uint32_t>("vpu.writeback_lat",  5);
+        uint32_t lane_width    = config.get<uint32_t>("vpu.lane_width",     8);
 
-        if (accelEnabled) {
-            AccelConfig accelCfg;
-            accelCfg.fixed_latency_cycles = fixed_latency_cycles;
-            accelCfg.dispatch_lat         = dispatch_lat;
-            accelCfg.addr_compute_lat     = addr_compute_lat;
-            accelCfg.bitop_lat            = bitop_lat;
-            accelCfg.writeback_lat        = writeback_lat;
-            accelCfg.lane_width           = lane_width;
+        if (vpuEnabled) {
+            VpuConfig vpuCfg;
+            vpuCfg.dispatch_lat  = dispatch_lat;
+            vpuCfg.exec_lat      = exec_lat;
+            vpuCfg.writeback_lat = writeback_lat;
+            vpuCfg.lane_width    = lane_width;
 
-            g_string accelName("accel");
-            zinfo->accel = new AccelCore(accelName, accelCfg);
-            zinfo->accel->initStats(zinfo->rootStat);  // MUST be before PostInitStats()
-            info("Accelerator enabled: fixed_latency=%lu cycles, lane_width=%u",
-                 accelCfg.fixed_latency_cycles, accelCfg.lane_width);
+            g_string vpuName("vpu");
+            zinfo->vpu = new Vpu(vpuName, vpuCfg);
+            zinfo->vpu->initStats(zinfo->rootStat);  // MUST be before PostInitStats()
+            info("VPU enabled: dispatch=%u exec=%u writeback=%u lane_width=%u",
+                 vpuCfg.dispatch_lat, vpuCfg.exec_lat,
+                 vpuCfg.writeback_lat, vpuCfg.lane_width);
         } else {
-            info("Accelerator disabled (accel.enable not set in config)");
+            info("VPU disabled (vpu.enable not set in config)");
         }
     }
 

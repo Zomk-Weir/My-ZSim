@@ -39,6 +39,15 @@
 // Uncomment to enable stall stats
 #define OOO_STALL_STATS
 
+// Method B: disable port-contention delay in the issue window (WindowStructure::scheduleInternal).
+// When defined, a uop that finds its target port(s) already occupied in a given cycle is still
+// scheduled into that same cycle instead of being pushed forward by one cycle at a time.
+// RS capacity (WSZ), ROB, issue width, RF read ports, and data dependences (regScoreboard)
+// remain unaffected. The shadow path (touchOccupancy=false, used by poisonRange/extraSlots)
+// is intentionally left intact so the loop in poisonRange still terminates.
+// Comment out this line to restore original port-conflict modeling.
+// #define DISABLE_PORT_CONTENTION_DELAY
+
 class FilterCache;
 
 /* 2-level branch predictor:
@@ -221,6 +230,18 @@ class WindowStructure {
                     schedCycle = curCycle + (curWinPos - curPos);
                     break;
                 } else {
+#ifdef DISABLE_PORT_CONTENTION_DELAY
+                    // Method B: ignore port conflicts on the real-scheduling path; still bump
+                    // count so advancePos releases this entry later. Shadow path falls through
+                    // to the original ++ so poisonRange still walks the range as intended.
+                    if (touchOccupancy) {
+                        if (recordPort) lastPort = __builtin_ffs(portMask) - 1;
+                        curWin[curWinPos].occUnits |= portMask;
+                        curWin[curWinPos].count++;
+                        schedCycle = curCycle + (curWinPos - curPos);
+                        break;
+                    }
+#endif
                     curWinPos++;
                 }
             }
@@ -231,6 +252,15 @@ class WindowStructure {
                         schedCycle = curCycle + (nextWinPos + H - curPos);
                         break;
                     } else {
+#ifdef DISABLE_PORT_CONTENTION_DELAY
+                        if (touchOccupancy) {
+                            if (recordPort) lastPort = __builtin_ffs(portMask) - 1;
+                            nextWin[nextWinPos].occUnits |= portMask;
+                            nextWin[nextWinPos].count++;
+                            schedCycle = curCycle + (nextWinPos + H - curPos);
+                            break;
+                        }
+#endif
                         nextWinPos++;
                     }
                 }
@@ -250,10 +280,23 @@ class WindowStructure {
                             ubWin.insert(it /*hint, makes insert faster*/, std::pair<uint64_t, WinCycle>(schedCycle, wc));
                         } else {
                             if (!trySchedule<touchOccupancy, recordPort>(it->second, portMask)) {
+#ifdef DISABLE_PORT_CONTENTION_DELAY
+                                if (touchOccupancy) {
+                                    if (recordPort) lastPort = __builtin_ffs(portMask) - 1;
+                                    it->second.occUnits |= portMask;
+                                    it->second.count++;
+                                    // schedCycle already equals it->first; fall through to break
+                                } else {
+                                    it++;
+                                    schedCycle++;
+                                    continue;
+                                }
+#else
                                 // Try next cycle
                                 it++;
                                 schedCycle++;
                                 continue;
+#endif
                             }  // else scheduled correctly
                         }
                         break;
@@ -286,6 +329,7 @@ class WindowStructure {
                 wc.occUnits |= portMask;  // or anyway, no conditionals
                 return availMask;
             }
+
         }
 };
 
@@ -468,11 +512,16 @@ class OOOCore : public Core {
 
         InstrFuncPtrs GetFuncPtrs();
 
-        // Phase 1: stall this core for 'cycles' cycles to model
-        // the CPU waiting for the accelerator to finish.
+        // Stall this core for 'cycles' cycles (e.g. to model the CPU
+        // waiting for the VPU co-processor to finish a synchronous task).
         // Implementation is in ooo_core.cpp (cannot inline here because
         // advance() is a private inline defined only in the .cpp file).
-        void stallForAccel(uint64_t cycles) override;
+        void stallCycles(uint64_t cycles) override;
+
+        // Expose this core's L1 data cache so off-core entities (e.g. the
+        // VPU) can issue memory requests on this core's behalf and share
+        // the same coherence domain.
+        FilterCache* getL1D() override { return l1d; }
 
         // Contention simulation interface
         inline EventRecorder* getEventRecorder() {return cRec.getEventRecorder();}

@@ -75,10 +75,7 @@ static inline bool isTrackedPC(uint64_t pc) {
 #define ISSUE_STAGE 7
 #define DISPATCH_STAGE 13  // RAT + ROB + RS, each is easily 2 cycles
 
-// #define FETCH_STAGE 1
-// #define DECODE_STAGE 2  // NOTE: Decoder adds predecode delays to decode
-// #define ISSUE_STAGE 3
-// #define DISPATCH_STAGE 4  // RAT + ROB + RS, each is easily 2 cycles
+
 
 #define L1D_LAT 4  // fixed, and FilterCache does not include L1 delay
 #define FETCH_BYTES_PER_CYCLE 16 //modified by wei on 251112: to expand the fetch bytes per cycle,initially set to 16
@@ -274,12 +271,12 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
         if (decodeCycle > curCycle) {
             // info("Decode stall %ld %ld | %d %d", decodeCycle, curCycle, uop->decCycle, prevDecCycle);
             uint32_t cdDiff = decodeCycle - curCycle;
-            if(decodeCycle == uopQueue.minAllocCycle()) {
-                info("Decode stall for %d cycles b/c of uopQueue", cdDiff);
-            }
-            else {
-                info("Decode stall for %d cycles b/c of decDiff", cdDiff);
-            }
+            // if(decodeCycle == uopQueue.minAllocCycle()) {
+            //     info("Decode stall for %d cycles b/c of uopQueue", cdDiff);
+            // }
+            // else {
+            //     info("Decode stall for %d cycles b/c of decDiff", cdDiff);
+            // }
 #ifdef OOO_STALL_STATS
             profDecodeStalls.inc(cdDiff);
 #endif
@@ -913,9 +910,10 @@ void OOOCore::advance(uint64_t targetCycle) {
      */
 }
 
-// Phase 1: stall the core for a fixed number of cycles while the
-// accelerator executes.  Delegates to advance() which is defined above.
-void OOOCore::stallForAccel(uint64_t cycles) {
+// Generic stall: advance this core's cycle counter by 'cycles' to model
+// the CPU waiting for an off-core entity (e.g. the VPU co-processor).
+// Delegates to advance() which is defined above.
+void OOOCore::stallCycles(uint64_t cycles) {
     if (cycles > 0) advance(curCycle + cycles);
 }
 

@@ -34,7 +34,7 @@
 #include "pad.h"
 
 class Core;
-class AccelCore;   // Phase 1: simulated accelerator
+class Vpu;         // Simulated vector processing unit (co-processor)
 class Scheduler;
 class AggregateStat;
 class StatsBackend;
@@ -191,9 +191,10 @@ struct GlobSimInfo {
     bool pcAccessRecordingEnabled;
     uint64_t pcAccessMaxRecords;
 
-    // Phase 1: simulated accelerator (collision-check co-processor).
-    // Null if the accelerator is not enabled in the config file.
-    AccelCore* accel;
+    // Simulated vector processing unit (co-processor).
+    // Null if the VPU is not enabled in the config file.
+    // Decoupled from any specific Core; awakened via the magic-op hook.
+    Vpu* vpu;
 };
 
 

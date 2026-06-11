@@ -33,8 +33,8 @@
 #include "fake_hit_manager.h"
 // modified by wei wu on 251211: Added PC access recorder include
 #include "pc_access_recorder.h"
-// Phase 1: simulated accelerator
-#include "accel_core.h"
+// Simulated VPU co-processor
+#include "vpu.h"
 #include <algorithm>
 #define _SIGNAL_H
 #include <signum.h>
@@ -1241,6 +1241,64 @@ VOID SimEnd() {
 #define ZSIM_MAGIC_OP_HEARTBEAT         (1028)
 
 VOID HandleMagicOp(THREADID tid, ADDRINT op) {
+    // ---- VPU co-processor magic-op dispatch ----
+    // Encoding (kept in sync with apps/include/zsim_hooks.h):
+    //   op[63:48] = ZSIM_VPU_MAGIC_SENTINEL (0xCAFE)
+    //   op[47:0]  = (uintptr_t)(VpuTaskDesc*)
+    // We detect VPU launches by the sentinel in the upper 16 bits, which
+    // is guaranteed to be zero for all canonical x86-64 user pointers and
+    // for the small numeric magic-op codes (1025-2001) handled below.
+    static constexpr uint64_t VPU_SENTINEL = 0xCAFEULL;
+    static constexpr uint64_t VPU_PTR_MASK = 0x0000FFFFFFFFFFFFULL;
+    if ((static_cast<uint64_t>(op) >> 48) == VPU_SENTINEL) {
+        if (zinfo->vpu == nullptr) {
+            warn("Thread %d: VPU magic op received but VPU is not enabled "
+                 "(set vpu.enable = true in zsim.cfg)", tid);
+            return;
+        }
+        VpuTaskDesc* desc = reinterpret_cast<VpuTaskDesc*>(
+                static_cast<uintptr_t>(static_cast<uint64_t>(op) & VPU_PTR_MASK));
+        if (desc == nullptr) {
+            warn("Thread %d: VPU launch with null descriptor", tid);
+            return;
+        }
+        // IMPORTANT: getCid() can return either INVALID_CID (-1) for a
+        // descheduled thread OR UNINITIALIZED_CID (-2) for a thread that
+        // has not yet been registered with the scheduler (very common
+        // immediately after ROI_BEGIN, before the first BBL hook fires).
+        // The catch-all is "cid is out of [0, numCores)".
+        const uint32_t cid = getCid(tid);
+        if (cid >= zinfo->numCores) {
+            warn("Thread %d: VPU launch but cid=%u is not a valid core id "
+                 "(numCores=%u). The launching thread is probably not yet "
+                 "registered with the scheduler. Skipping.",
+                 tid, cid, zinfo->numCores);
+            return;
+        }
+        // Resolve the host core and its L1D here (NOT inside Vpu::execute)
+        // so the VPU stays decoupled from the cores[] array.
+        if (zinfo->cores == nullptr) {
+            warn("Thread %d: VPU launch but zinfo->cores is null", tid);
+            return;
+        }
+        Core* host = zinfo->cores[cid];
+        if (host == nullptr) {
+            warn("Thread %d: VPU launch but host core[%u] is null", tid, cid);
+            return;
+        }
+        FilterCache* l1d = host->getL1D();   // may be nullptr (NullCore etc.)
+        const uint64_t hostStartCycle = host->getCycles();
+        info("[VPU-DISPATCH] tid=%d cid=%u host=%p l1d=%p startCycle=%lu desc=%p",
+             tid, cid, (void*)host, (void*)l1d, hostStartCycle, (void*)desc);
+
+        const uint64_t latency =
+            zinfo->vpu->execute(tid, cid, desc, l1d, hostStartCycle);
+        if (latency > 0) {
+            host->stallCycles(latency);
+        }
+        return;
+    }
+
     switch (op) {
         case ZSIM_MAGIC_OP_ROI_BEGIN:
             if (!zinfo->ignoreHooks) {
@@ -1304,36 +1362,6 @@ VOID HandleMagicOp(THREADID tid, ADDRINT op) {
         case 1032:
         case 1033:
             return;
-
-        // ---- Phase 1: Accelerator invocation ----
-        // op encoding: bits[63:32] = lower 32 bits of AccelTaskDesc* pointer
-        //              bits[31:0]  = ZSIM_MAGIC_OP_ACCEL_INVOKE (2001)
-        case 2001: { // ZSIM_MAGIC_OP_ACCEL_INVOKE
-            if (zinfo->accel == nullptr) {
-                warn("Thread %d: ACCEL_INVOKE received but accelerator is not enabled "
-                     "(set accel.enable = true in zsim.cfg)", tid);
-                return;
-            }
-            // Reconstruct descriptor pointer from upper 32 bits of op
-            AccelTaskDesc* desc = reinterpret_cast<AccelTaskDesc*>(
-                static_cast<uintptr_t>(op >> 32));
-            if (desc == nullptr) {
-                warn("Thread %d: ACCEL_INVOKE has null descriptor pointer", tid);
-                return;
-            }
-            uint32_t cid = getCid(tid);
-            if (cid == INVALID_CID) {
-                warn("Thread %d: ACCEL_INVOKE but cid is INVALID, skipping", tid);
-                return;
-            }
-            // Run accelerator model: functional execution + latency calculation
-            uint64_t latency = zinfo->accel->simulate(tid, cid, desc);
-            // Stall the CPU core for the modelled accelerator latency
-            if (latency > 0) {
-                zinfo->cores[cid]->stallForAccel(latency);
-            }
-            return;
-        }
 
         default:
             // info("OVEC instruction detected: op=%llu", (unsigned long long)op);
